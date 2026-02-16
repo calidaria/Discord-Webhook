@@ -390,7 +390,7 @@ def main():
     # Create and run bot
     bot = TwitterToDiscord(
         discord_webhook_url=DISCORD_WEBHOOK_URL,
-        check_interval=300  # Check every 5 minutes
+        check_interval=3600  # Check every 1 hour (3600 seconds)
     )
     bot.run()
 
