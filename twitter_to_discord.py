@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Twitter/X to Discord Webhook Bot - Version 5
-Uses fxtwitter API for reliable image AND video support
+Twitter/X to Discord Webhook Bot - Version 6
+Uses RSSHub (more reliable than Nitter) + fxtwitter for images/videos
 """
 
 import requests
@@ -11,7 +11,8 @@ import os
 import re
 from datetime import datetime
 import xml.etree.ElementTree as ET
-from html import unescape
+
+USERNAME = "SoJ_Global"
 
 class TwitterToDiscord:
     def __init__(self, discord_webhook_url: str, check_interval: int = 3600):
@@ -39,107 +40,111 @@ class TwitterToDiscord:
         except Exception as e:
             print(f"⚠️  Could not save seen tweets: {e}")
 
-    def get_tweet_ids_from_rss(self, username: str) -> list:
-        """Get list of recent tweet IDs from Nitter RSS"""
-        nitter_instances = [
-            "nitter.poast.org",
-            "nitter.net",
-            "nitter.privacydev.net",
-            "nitter.mutant.tech",
+    def get_tweet_ids(self) -> list:
+        """Get recent tweet IDs - tries RSSHub first, then Nitter as fallback"""
+        
+        # RSSHub instances (more reliable than Nitter)
+        rsshub_instances = [
+            f"https://rsshub.app/twitter/user/{USERNAME}",
+            f"https://rsshub.feeded.app/twitter/user/{USERNAME}",
+            f"https://rss.shab.fun/twitter/user/{USERNAME}",
+            f"https://rsshub.rssforever.com/twitter/user/{USERNAME}",
         ]
 
-        for instance in nitter_instances:
-            try:
-                url = f"https://{instance}/{username}/rss"
-                headers = {'User-Agent': 'Mozilla/5.0'}
-                print(f"  📡 Trying {instance}...")
-                response = requests.get(url, headers=headers, timeout=15)
+        # Nitter instances as fallback
+        nitter_instances = [
+            f"https://nitter.net/{USERNAME}/rss",
+            f"https://nitter.poast.org/{USERNAME}/rss",
+            f"https://nitter.privacydev.net/{USERNAME}/rss",
+        ]
 
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+        # Try RSSHub first
+        print("  🔄 Trying RSSHub instances...")
+        for url in rsshub_instances:
+            try:
+                print(f"  📡 Trying {url.split('/')[2]}...")
+                response = requests.get(url, headers=headers, timeout=15)
                 if response.status_code == 200:
-                    print(f"  ✅ Got RSS from {instance}")
-                    return self.parse_tweet_ids(response.text)
+                    ids = self.parse_rss_for_ids(response.text)
+                    if ids:
+                        print(f"  ✅ Got {len(ids)} tweet IDs from RSSHub!")
+                        return ids
             except Exception as e:
-                print(f"  ❌ Failed {instance}: {str(e)[:60]}")
+                print(f"  ❌ Failed: {str(e)[:50]}")
                 continue
 
-        print("  ⚠️  All Nitter instances failed")
+        # Try Nitter as fallback
+        print("  🔄 Trying Nitter instances as fallback...")
+        for url in nitter_instances:
+            try:
+                print(f"  📡 Trying {url.split('/')[2]}...")
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    ids = self.parse_rss_for_ids(response.text)
+                    if ids:
+                        print(f"  ✅ Got {len(ids)} tweet IDs from Nitter!")
+                        return ids
+            except Exception as e:
+                print(f"  ❌ Failed: {str(e)[:50]}")
+                continue
+
+        print("  ⚠️  All sources failed - will retry next hour")
         return []
 
-    def parse_tweet_ids(self, rss_content: str) -> list:
-        """Extract tweet IDs and basic info from RSS"""
+    def parse_rss_for_ids(self, rss_content: str) -> list:
+        """Parse RSS and extract tweet IDs"""
         tweet_ids = []
         try:
             root = ET.fromstring(rss_content)
             for item in root.findall('.//item')[:10]:
                 link = item.find('link')
-                pub_date = item.find('pubDate')
                 if link is not None and link.text:
-                    # Extract tweet ID from URL
-                    tweet_id = link.text.rstrip('/').split('/')[-1].split('#')[0]
-                    # Clean up ID (remove any non-numeric chars)
-                    tweet_id = re.sub(r'[^0-9]', '', tweet_id)
+                    # Extract numeric tweet ID from URL
+                    tweet_id = re.sub(r'[^0-9]', '', link.text.rstrip('/').split('/')[-1].split('#')[0])
                     if tweet_id and len(tweet_id) > 5:
-                        tweet_ids.append({
-                            'id': tweet_id,
-                            'pub_date': pub_date.text if pub_date is not None else ''
-                        })
+                        tweet_ids.append(tweet_id)
         except Exception as e:
             print(f"  ❌ Error parsing RSS: {e}")
-        print(f"  📊 Found {len(tweet_ids)} tweet IDs in RSS")
         return tweet_ids
 
-    def get_tweet_details(self, tweet_id: str, username: str) -> dict:
-        """
-        Get full tweet details including images/videos using fxtwitter API
-        This is the key method that gets media reliably!
-        """
+    def get_tweet_details(self, tweet_id: str) -> dict:
+        """Get full tweet details including images/videos from fxtwitter"""
         try:
-            # fxtwitter has a great API for getting tweet details with media
-            url = f"https://api.fxtwitter.com/{username}/status/{tweet_id}"
+            url = f"https://api.fxtwitter.com/{USERNAME}/status/{tweet_id}"
             headers = {'User-Agent': 'Mozilla/5.0'}
-            
             response = requests.get(url, headers=headers, timeout=10)
-            
+
             if response.status_code == 200:
                 data = response.json()
                 tweet = data.get('tweet', {})
-                
                 if not tweet:
                     return None
-                
-                # Extract media
+
                 images = []
                 video_url = None
-                video_thumbnail = None
-                
+
                 media = tweet.get('media', {})
-                
-                # Get photos
-                photos = media.get('photos', [])
-                for photo in photos:
-                    img_url = photo.get('url', '')
-                    if img_url:
-                        images.append(img_url)
-                
-                # Get videos
+
+                for photo in media.get('photos', []):
+                    if photo.get('url'):
+                        images.append(photo['url'])
+
                 videos = media.get('videos', [])
                 if videos:
-                    video = videos[0]  # Get first video
-                    video_url = video.get('url', '')
-                    video_thumbnail = video.get('thumbnail_url', '')
-                    # Use thumbnail as image if no photos
-                    if video_thumbnail and not images:
-                        images.append(video_thumbnail)
-                
-                # Get GIFs (treated as videos in Twitter)
+                    video_url = videos[0].get('url', '')
+                    thumb = videos[0].get('thumbnail_url', '')
+                    if thumb and not images:
+                        images.append(thumb)
+
                 gifs = media.get('gifs', [])
                 if gifs and not video_url:
-                    gif = gifs[0]
-                    video_url = gif.get('url', '')
-                    if video_url and not images:
-                        images.append(gif.get('thumbnail_url', ''))
+                    video_url = gifs[0].get('url', '')
+                    thumb = gifs[0].get('thumbnail_url', '')
+                    if thumb and not images:
+                        images.append(thumb)
 
-                # Parse timestamp
                 created_at = tweet.get('created_at', '')
                 timestamp = None
                 if created_at:
@@ -152,42 +157,37 @@ class TwitterToDiscord:
                 return {
                     'id': tweet_id,
                     'text': tweet.get('text', ''),
-                    'link': f"https://twitter.com/{username}/status/{tweet_id}",
+                    'link': f"https://twitter.com/{USERNAME}/status/{tweet_id}",
                     'images': images,
                     'video_url': video_url,
-                    'video_thumbnail': video_thumbnail,
-                    'has_media': len(images) > 0 or video_url is not None,
                     'timestamp': timestamp,
-                    'user_name': tweet.get('author', {}).get('name', username),
-                    'user_screen_name': username,
+                    'user_name': tweet.get('author', {}).get('name', USERNAME),
                 }
             else:
-                print(f"  ⚠️  fxtwitter returned status {response.status_code}")
+                print(f"  ❌ fxtwitter returned {response.status_code} for tweet {tweet_id}")
                 return None
-                
+
         except Exception as e:
-            print(f"  ❌ Error fetching tweet details: {e}")
+            print(f"  ❌ Error fetching tweet {tweet_id}: {e}")
             return None
 
     def create_discord_embeds(self, tweet: dict) -> list:
-        """Create Discord embeds with images for a tweet"""
-        username = tweet.get('user_screen_name', 'SoJ_Global')
-        user_display_name = tweet.get('user_name', 'Sword of Justice')
-        text = tweet.get('text', '')
-        tweet_url = tweet.get('link', '')
+        """Create Discord embeds with images/videos"""
         images = tweet.get('images', [])
         video_url = tweet.get('video_url')
-        timestamp = tweet.get('timestamp')
+        text = tweet.get('text', '')
 
-        # Main embed
+        if video_url:
+            text += f"\n\n🎬 **[Click to watch video]({tweet['link']})**"
+
         main_embed = {
-            "title": f"New post from @{username}",
-            "description": text[:4096] if text else "No text content",
-            "url": tweet_url,
-            "color": 1942002,  # Twitter blue
+            "title": f"New post from @{USERNAME}",
+            "description": text[:4096],
+            "url": tweet['link'],
+            "color": 1942002,
             "author": {
-                "name": f"{user_display_name} (@{username})",
-                "url": f"https://twitter.com/{username}",
+                "name": f"{tweet.get('user_name', 'Sword of Justice')} (@{USERNAME})",
+                "url": f"https://twitter.com/{USERNAME}",
                 "icon_url": "https://abs.twimg.com/icons/apple-touch-icon-192x192.png"
             },
             "footer": {
@@ -196,147 +196,101 @@ class TwitterToDiscord:
             }
         }
 
-        if timestamp:
-            main_embed["timestamp"] = timestamp
+        if tweet.get('timestamp'):
+            main_embed["timestamp"] = tweet['timestamp']
 
-        # Add first image to main embed
-        if images and images[0]:
+        if images:
             main_embed["image"] = {"url": images[0]}
-            print(f"  🖼️  Added image: {images[0][:70]}...")
-
-        # If there's a video, add a note
-        if video_url:
-            current_desc = main_embed.get("description", "")
-            main_embed["description"] = current_desc + f"\n\n🎬 **[Click to watch video]({tweet_url})**"
-            print(f"  🎬 Tweet has video: {video_url[:70]}...")
+            print(f"  🖼️  Image 1: {images[0][:70]}...")
 
         embeds = [main_embed]
 
-        # Add additional images as extra embeds (Discord trick for galleries)
-        if len(images) > 1:
-            for extra_image in images[1:4]:  # Max 4 images total
-                if extra_image:
-                    embeds.append({
-                        "url": tweet_url,  # Same URL groups them as a gallery!
-                        "image": {"url": extra_image}
-                    })
-                    print(f"  🖼️  Added extra image: {extra_image[:70]}...")
+        for extra_img in images[1:4]:
+            if extra_img:
+                embeds.append({"url": tweet['link'], "image": {"url": extra_img}})
+                print(f"  🖼️  Extra image: {extra_img[:70]}...")
 
         return embeds
 
     def send_to_discord(self, tweet: dict) -> bool:
-        """Send tweet embed to Discord"""
+        """Send tweet to Discord"""
         embeds = self.create_discord_embeds(tweet)
-
         payload = {"embeds": embeds[:10]}
 
         try:
             response = requests.post(self.webhook_url, json=payload, timeout=10)
             response.raise_for_status()
-
-            media_count = len(tweet.get('images', []))
-            has_video = tweet.get('video_url') is not None
-
-            if has_video:
-                print(f"  ✅ Sent tweet with video + {media_count} image(s)")
-            elif media_count > 0:
-                print(f"  ✅ Sent tweet with {media_count} image(s)")
-            else:
-                print(f"  ✅ Sent text-only tweet")
+            media = len(tweet.get('images', []))
+            has_video = bool(tweet.get('video_url'))
+            label = f"{media} image(s)" if media else ""
+            label += " + video" if has_video else ""
+            print(f"  ✅ Sent to Discord! ({label if label else 'text only'})")
             return True
-
         except Exception as e:
             print(f"  ❌ Error sending to Discord: {e}")
             return False
 
     def run(self):
-        """Main bot loop"""
-        print(f"🤖 Twitter to Discord Bot v5 (fxtwitter - Reliable Images & Videos)")
-        print(f"📡 Monitoring: @SoJ_Global")
-        print(f"🔄 Check interval: {self.check_interval} seconds ({self.check_interval // 3600}h)")
+        print(f"🤖 Twitter to Discord Bot v6")
+        print(f"📡 Monitoring: @{USERNAME}")
+        print(f"🔄 Check interval: {self.check_interval // 3600}h")
         print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-
-        username = "SoJ_Global"
 
         while True:
             try:
                 current_time = datetime.now().strftime('%H:%M:%S')
                 print(f"🔍 [{current_time}] Checking for new tweets...")
 
-                # Step 1: Get tweet IDs from RSS
-                tweet_items = self.get_tweet_ids_from_rss(username)
+                tweet_ids = self.get_tweet_ids()
 
-                if not tweet_items:
-                    print(f"  ⚠️  Could not fetch tweet IDs\n")
+                if not tweet_ids:
+                    print(f"  ⚠️  Could not fetch tweet IDs - will retry next check\n")
                 else:
-                    # Step 2: Find new tweet IDs
-                    new_tweet_items = [
-                        t for t in tweet_items
-                        if t['id'] not in self.seen_tweets
-                    ]
+                    new_ids = [tid for tid in tweet_ids if tid not in self.seen_tweets]
 
                     if self.first_run:
-                        print(f"  🎯 First run - marking {len(tweet_items)} existing tweets as seen (no posting)")
-                        for t in tweet_items:
-                            self.seen_tweets.add(t['id'])
+                        print(f"  🎯 First run - marking {len(tweet_ids)} tweets as seen (no posting)")
+                        for tid in tweet_ids:
+                            self.seen_tweets.add(tid)
                         self.save_seen_tweets()
                         self.first_run = False
                         print(f"  ✅ Ready! Will now post only NEW tweets\n")
 
-                    elif not new_tweet_items:
-                        print(f"  ℹ️  No new tweets found\n")
+                    elif not new_ids:
+                        print(f"  ℹ️  No new tweets\n")
 
                     else:
-                        print(f"  🆕 Found {len(new_tweet_items)} new tweet(s)!\n")
-
-                        # Process oldest first
-                        for i, item in enumerate(reversed(new_tweet_items), 1):
-                            tweet_id = item['id']
-                            print(f"  📥 Fetching details for tweet {i}/{len(new_tweet_items)} (ID: {tweet_id})")
-
-                            # Step 3: Get full details including media from fxtwitter
-                            tweet = self.get_tweet_details(tweet_id, username)
-
+                        print(f"  🆕 Found {len(new_ids)} new tweet(s)!\n")
+                        for i, tweet_id in enumerate(reversed(new_ids), 1):
+                            print(f"  📥 Tweet {i}/{len(new_ids)} (ID: {tweet_id})")
+                            tweet = self.get_tweet_details(tweet_id)
                             if tweet:
-                                print(f"  📤 Sending to Discord...")
-                                if self.send_to_discord(tweet):
-                                    self.seen_tweets.add(tweet_id)
-                                    self.save_seen_tweets()
-                            else:
-                                # Even if we can't get details, mark as seen
+                                self.send_to_discord(tweet)
                                 self.seen_tweets.add(tweet_id)
                                 self.save_seen_tweets()
-                                print(f"  ⚠️  Could not get tweet details, skipping")
-
+                            else:
+                                self.seen_tweets.add(tweet_id)
+                                self.save_seen_tweets()
                             print()
-                            if i < len(new_tweet_items):
+                            if i < len(new_ids):
                                 time.sleep(2)
 
-                        print(f"  ✅ Done processing new tweets!\n")
-
             except Exception as e:
-                print(f"❌ Error in main loop: {e}\n")
-                import traceback
-                traceback.print_exc()
+                print(f"❌ Error: {e}\n")
 
-            print(f"💤 Sleeping for {self.check_interval} seconds ({self.check_interval // 3600}h)...")
+            print(f"💤 Sleeping {self.check_interval // 3600}h...")
             print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
             time.sleep(self.check_interval)
 
 
 def main():
     DISCORD_WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL', '')
-
     if not DISCORD_WEBHOOK_URL:
-        print("❌ Error: DISCORD_WEBHOOK_URL not set")
+        print("❌ DISCORD_WEBHOOK_URL not set")
         return
 
-    print("🚀 Initializing bot...\n")
-
-    bot = TwitterToDiscord(
-        discord_webhook_url=DISCORD_WEBHOOK_URL,
-        check_interval=3600  # 1 hour
-    )
+    print("🚀 Initializing...\n")
+    bot = TwitterToDiscord(discord_webhook_url=DISCORD_WEBHOOK_URL, check_interval=3600)
     bot.run()
 
 
