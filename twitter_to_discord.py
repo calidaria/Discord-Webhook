@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 import xml.etree.ElementTree as ET
 
-USERNAME = "SoJ_Global"
+USERNAME = "SoJ_JP"
 
 class TwitterToDiscord:
     def __init__(self, discord_webhook_url: str, check_interval: int = 3600):
