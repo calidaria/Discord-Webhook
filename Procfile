@@ -1,1 +1,1 @@
-worker: python twitter_to_discord.py
+web: python twitter_to_discord.py
