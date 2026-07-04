@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Twitter/X to Discord Webhook Bot - Version 6
-Uses RSSHub (more reliable than Nitter) + fxtwitter for images/videos
+Twitter/X to Discord Webhook Bot - Version 8
+Updated with currently-alive Nitter-style instances (2026) + fxtwitter for images/videos
 """
 
 import requests
@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 import xml.etree.ElementTree as ET
 
-USERNAME = "SoJ_JP"
+USERNAME = "SoJ_JP"  # Change this to whichever account you want to monitor
 
 class TwitterToDiscord:
     def __init__(self, discord_webhook_url: str, check_interval: int = 3600):
@@ -41,73 +41,123 @@ class TwitterToDiscord:
             print(f"⚠️  Could not save seen tweets: {e}")
 
     def get_tweet_ids(self) -> list:
-        """Get recent tweet IDs - tries RSSHub first, then Nitter as fallback"""
-        
-        # RSSHub instances (more reliable than Nitter)
-        rsshub_instances = [
-            f"https://rsshub.app/twitter/user/{USERNAME}",
-            f"https://rsshub.feeded.app/twitter/user/{USERNAME}",
-            f"https://rss.shab.fun/twitter/user/{USERNAME}",
-            f"https://rsshub.rssforever.com/twitter/user/{USERNAME}",
+        """Try multiple methods to get recent tweet IDs, in order of reliability"""
+
+        methods = [
+            ("Twitter Syndication API", self.try_syndication_api),
+            ("RSSHub",                  self.try_rsshub),
+            ("Nitter-style instances",  self.try_nitter_instances),
         ]
 
-        # Nitter instances as fallback
-        nitter_instances = [
-            f"https://nitter.net/{USERNAME}/rss",
-            f"https://nitter.poast.org/{USERNAME}/rss",
-            f"https://nitter.privacydev.net/{USERNAME}/rss",
-        ]
-
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-
-        # Try RSSHub first
-        print("  🔄 Trying RSSHub instances...")
-        for url in rsshub_instances:
+        for name, method in methods:
             try:
-                print(f"  📡 Trying {url.split('/')[2]}...")
-                response = requests.get(url, headers=headers, timeout=15)
-                if response.status_code == 200:
-                    ids = self.parse_rss_for_ids(response.text)
-                    if ids:
-                        print(f"  ✅ Got {len(ids)} tweet IDs from RSSHub!")
-                        return ids
+                print(f"  🔄 Trying {name}...")
+                ids = method()
+                if ids:
+                    print(f"  ✅ Got {len(ids)} tweet IDs via {name}!")
+                    return ids
+                else:
+                    print(f"  ⚠️  {name} returned no results")
             except Exception as e:
-                print(f"  ❌ Failed: {str(e)[:50]}")
-                continue
+                print(f"  ❌ {name} failed: {str(e)[:80]}")
 
-        # Try Nitter as fallback
-        print("  🔄 Trying Nitter instances as fallback...")
-        for url in nitter_instances:
-            try:
-                print(f"  📡 Trying {url.split('/')[2]}...")
-                response = requests.get(url, headers=headers, timeout=15)
-                if response.status_code == 200:
-                    ids = self.parse_rss_for_ids(response.text)
-                    if ids:
-                        print(f"  ✅ Got {len(ids)} tweet IDs from Nitter!")
-                        return ids
-            except Exception as e:
-                print(f"  ❌ Failed: {str(e)[:50]}")
-                continue
-
-        print("  ⚠️  All sources failed - will retry next hour")
+        print("  ⚠️  All methods failed - will retry next check")
         return []
 
-    def parse_rss_for_ids(self, rss_content: str) -> list:
+    def try_syndication_api(self) -> list:
+        """Twitter's own syndication endpoint (no auth needed, when it works)"""
+        url = f"https://cdn.syndication.twimg.com/timeline/profile?screen_name={USERNAME}&limit=10"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Origin': 'https://platform.twitter.com',
+            'Referer': 'https://platform.twitter.com/',
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            raise Exception(f"Status {response.status_code}")
+
+        data = response.json()
+        ids = []
+        for item in data.get('timeline', [])[:10]:
+            tweet_id = item.get('tweet_id') or item.get('id_str') or str(item.get('id', ''))
+            tweet_id = re.sub(r'[^0-9]', '', str(tweet_id))
+            if tweet_id and len(tweet_id) > 5:
+                ids.append(tweet_id)
+        return ids
+
+    def try_rsshub(self) -> list:
+        """RSSHub public instances"""
+        instances = [
+            f"https://rsshub.app/twitter/user/{USERNAME}",
+            f"https://rsshub.rssforever.com/twitter/user/{USERNAME}",
+            f"https://rsshub.feeded.app/twitter/user/{USERNAME}",
+        ]
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/rss+xml, application/xml, text/xml',
+        }
+        for url in instances:
+            try:
+                print(f"    📡 {url.split('/')[2]}...")
+                response = requests.get(url, headers=headers, timeout=20)
+                if response.status_code == 200:
+                    ids = self.parse_rss_ids(response.text)
+                    if ids:
+                        return ids
+            except Exception as e:
+                print(f"    ❌ {str(e)[:50]}")
+        return []
+
+    def try_nitter_instances(self) -> list:
+        """
+        Currently-alive Nitter-style instances (updated July 2026).
+        This list will need occasional updates as instances come and go -
+        check https://status.d420.de/ for the current live list.
+        """
+        instances = [
+            f"https://xcancel.com/{USERNAME}/rss",
+            f"https://nitter.privacyredirect.com/{USERNAME}/rss",
+            f"https://lightbrd.com/{USERNAME}/rss",
+            f"https://nitter.tiekoetter.com/{USERNAME}/rss",
+            f"https://nuku.trabun.org/{USERNAME}/rss",
+            f"https://nitter.catsarch.com/{USERNAME}/rss",
+            f"https://nitter.kareem.one/{USERNAME}/rss",
+            f"https://nt.vern.cc/{USERNAME}/rss",
+            # Old instances kept as last resort in case they come back
+            f"https://nitter.net/{USERNAME}/rss",
+            f"https://nitter.poast.org/{USERNAME}/rss",
+        ]
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        for url in instances:
+            try:
+                print(f"    📡 {url.split('/')[2]}...")
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    ids = self.parse_rss_ids(response.text)
+                    if ids:
+                        print(f"    ✅ Success from {url.split('/')[2]}!")
+                        return ids
+                else:
+                    print(f"    ❌ Status {response.status_code}")
+            except Exception as e:
+                print(f"    ❌ {str(e)[:50]}")
+        return []
+
+    def parse_rss_ids(self, rss_content: str) -> list:
         """Parse RSS and extract tweet IDs"""
-        tweet_ids = []
+        ids = []
         try:
             root = ET.fromstring(rss_content)
             for item in root.findall('.//item')[:10]:
                 link = item.find('link')
                 if link is not None and link.text:
-                    # Extract numeric tweet ID from URL
                     tweet_id = re.sub(r'[^0-9]', '', link.text.rstrip('/').split('/')[-1].split('#')[0])
                     if tweet_id and len(tweet_id) > 5:
-                        tweet_ids.append(tweet_id)
-        except Exception as e:
-            print(f"  ❌ Error parsing RSS: {e}")
-        return tweet_ids
+                        ids.append(tweet_id)
+        except Exception:
+            pass
+        return ids
 
     def get_tweet_details(self, tweet_id: str) -> dict:
         """Get full tweet details including images/videos from fxtwitter"""
@@ -124,7 +174,6 @@ class TwitterToDiscord:
 
                 images = []
                 video_url = None
-
                 media = tweet.get('media', {})
 
                 for photo in media.get('photos', []):
@@ -186,7 +235,7 @@ class TwitterToDiscord:
             "url": tweet['link'],
             "color": 1942002,
             "author": {
-                "name": f"{tweet.get('user_name', 'Sword of Justice')} (@{USERNAME})",
+                "name": f"{tweet.get('user_name', USERNAME)} (@{USERNAME})",
                 "url": f"https://twitter.com/{USERNAME}",
                 "icon_url": "https://abs.twimg.com/icons/apple-touch-icon-192x192.png"
             },
@@ -204,7 +253,6 @@ class TwitterToDiscord:
             print(f"  🖼️  Image 1: {images[0][:70]}...")
 
         embeds = [main_embed]
-
         for extra_img in images[1:4]:
             if extra_img:
                 embeds.append({"url": tweet['link'], "image": {"url": extra_img}})
@@ -222,16 +270,16 @@ class TwitterToDiscord:
             response.raise_for_status()
             media = len(tweet.get('images', []))
             has_video = bool(tweet.get('video_url'))
-            label = f"{media} image(s)" if media else ""
+            label = f"{media} image(s)" if media else "text only"
             label += " + video" if has_video else ""
-            print(f"  ✅ Sent to Discord! ({label if label else 'text only'})")
+            print(f"  ✅ Sent to Discord! ({label})")
             return True
         except Exception as e:
             print(f"  ❌ Error sending to Discord: {e}")
             return False
 
     def run(self):
-        print(f"🤖 Twitter to Discord Bot v6")
+        print(f"🤖 Twitter to Discord Bot v8 (Updated live instances)")
         print(f"📡 Monitoring: @{USERNAME}")
         print(f"🔄 Check interval: {self.check_interval // 3600}h")
         print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -249,7 +297,7 @@ class TwitterToDiscord:
                     new_ids = [tid for tid in tweet_ids if tid not in self.seen_tweets]
 
                     if self.first_run:
-                        print(f"  🎯 First run - marking {len(tweet_ids)} tweets as seen (no posting)")
+                        print(f"  🎯 First run - marking {len(tweet_ids)} tweets as seen")
                         for tid in tweet_ids:
                             self.seen_tweets.add(tid)
                         self.save_seen_tweets()
@@ -262,7 +310,7 @@ class TwitterToDiscord:
                     else:
                         print(f"  🆕 Found {len(new_ids)} new tweet(s)!\n")
                         for i, tweet_id in enumerate(reversed(new_ids), 1):
-                            print(f"  📥 Tweet {i}/{len(new_ids)} (ID: {tweet_id})")
+                            print(f"  📥 Fetching tweet {i}/{len(new_ids)} (ID: {tweet_id})")
                             tweet = self.get_tweet_details(tweet_id)
                             if tweet:
                                 self.send_to_discord(tweet)
